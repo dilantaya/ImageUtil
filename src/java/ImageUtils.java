@@ -6,17 +6,19 @@ import com.drew.imaging.ImageProcessingException;
 import com.drew.metadata.Directory;
 import com.drew.metadata.Metadata;
 import com.drew.metadata.Tag;
+import com.drew.metadata.exif.ExifIFD0Directory;
+import org.apache.commons.codec.binary.Base64;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import sun.misc.BASE64Decoder;
 
 import javax.imageio.ImageIO;
 import java.awt.*;
 import java.awt.geom.AffineTransform;
 import java.awt.image.BufferedImage;
-import java.awt.image.ColorModel;
-import java.awt.image.WritableRaster;
 import java.io.*;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.Map;
 
 
@@ -31,50 +33,51 @@ public class ImageUtils {
 
     /**
      * 上传图片，并处理旋转和压缩
-     * @param in
+     *
+     * @param in 文件流
      * @param saveFile
-     * @param proportion
+     * @param proportion 压缩等级
      * @return
      */
     public static boolean compressAndUpload(InputStream in, File saveFile, int proportion) {
 
-        if (null == in   || null == saveFile  || proportion < 1) {// 检查参数有效性
+        if (null == in || null == saveFile || proportion < 1) {// 检查参数有效性
             return false;
         }
 
         ByteArrayOutputStream baos = cloneInputStream(in);
 
-        // 打开两个新的输入流
-        InputStream stream1 = new ByteArrayInputStream(baos.toByteArray());
-        InputStream stream2 = new ByteArrayInputStream(baos.toByteArray());
+        // 打开两个新的输入流 并转换为base64编码
+        InputStream stream1 =getBase64FromInputStream (new ByteArrayInputStream(baos.toByteArray())) ;
+        InputStream stream2 =getBase64FromInputStream(new ByteArrayInputStream(baos.toByteArray()));
 
 
         BufferedImage srcImage = null;
         try {
             srcImage = ImageIO.read(stream1);
         } catch (IOException e) {
-            LOGGER.error("流转成文件失败！",e);
+            LOGGER.error("流转成文件失败！", e);
             return false;
         }
 
         //判断图片是否旋转 如过旋转先处理选装
-        Map<String,Object> map=  getExif(stream2);
-        int ro = getAngle(map);
+        int ro = getRotateAngleForPhoto(stream2);
 
         BufferedImage angelSrcImage = null;
-        Integer compressWith=null;
+        Integer compressWith = null;
         Integer compressHeight = null;
-        if (ro>0){ //需要翻转
-             angelSrcImage= getAngelBufferedImg(srcImage,srcImage.getWidth(),srcImage.getHeight(),ro);
-             compressWith = angelSrcImage.getWidth() / proportion;
-             compressHeight = angelSrcImage.getHeight() / proportion;
-        }else{
+        if (ro > 0) { //需要翻转
+            //angelSrcImage = getAngelBufferedImg(srcImage, srcImage.getWidth(), srcImage.getHeight(), ro);
+            angelSrcImage= RotateImageUtils.Rotate(srcImage,ro);
+            compressWith = angelSrcImage.getWidth() / proportion;
+            compressHeight = angelSrcImage.getHeight() / proportion;
+        } else {
             compressWith = srcImage.getWidth() / proportion;
             compressHeight = srcImage.getHeight() / proportion;
         }
 
         //压缩图片
-        srcImage = resize(angelSrcImage!=null?angelSrcImage:srcImage, compressWith, compressHeight);
+        srcImage = resize(angelSrcImage != null ? angelSrcImage : srcImage, compressWith, compressHeight);
 
         // 缩放后的图像的宽和高
         int w = srcImage.getWidth();
@@ -87,7 +90,7 @@ public class ImageUtils {
             try {
                 saveSubImage(srcImage, new Rectangle(x, y, compressWith, compressHeight), saveFile);
             } catch (IOException e) {
-                LOGGER.error("保存压缩过的图片失败！",e);
+                LOGGER.error("保存压缩过的图片失败！", e);
                 return false;
             }
         } else if (h == compressHeight) {  // 否则如果是缩放后的图像的高度和要求的图像高度一样，就对缩放后的图像的宽度进行截取
@@ -97,7 +100,7 @@ public class ImageUtils {
             try {
                 saveSubImage(srcImage, new Rectangle(x, y, compressWith, compressHeight), saveFile);
             } catch (IOException e) {
-                LOGGER.error("保存压缩过的图片失败！",e);
+                LOGGER.error("保存压缩过的图片失败！", e);
                 return false;
             }
         }
@@ -106,7 +109,7 @@ public class ImageUtils {
 
 
     /**
-     * 处理旋转图片并实现图像的等比缩放
+     * 实现图像的等比缩放
      *
      * @param source
      * @param targetW
@@ -130,13 +133,7 @@ public class ImageUtils {
             targetH = (int) (sy * source.getHeight());
         }
 
-        if (type == BufferedImage.TYPE_CUSTOM) { // handmade
-            ColorModel cm = source.getColorModel();
-            WritableRaster raster = cm.createCompatibleWritableRaster(targetW,targetH);
-            boolean alphaPremultiplied = cm.isAlphaPremultiplied();
-            target = new BufferedImage(cm, raster, false, null);
-        } else
-            target = new BufferedImage(targetW, targetH, BufferedImage.TYPE_INT_BGR);
+        target = new BufferedImage(targetW, targetH, BufferedImage.TYPE_INT_BGR);
 
         Graphics2D g = target.createGraphics();
         // smoother than exlax:
@@ -172,15 +169,16 @@ public class ImageUtils {
 
     /**
      * 获得翻转后的图片流
+     *
      * @param src
      * @param width
      * @param height
      * @param ro
      * @return
      */
-    public static BufferedImage getAngelBufferedImg(BufferedImage src, int width, int height, int ro){
+    public static BufferedImage getAngelBufferedImg(BufferedImage src, int width, int height, int ro) {
 
-        int angle = (int)(90*ro);
+        int angle = (int) (90 * ro);
         int type = src.getColorModel().getTransparency();
         int wid = width;
         int hei = height;
@@ -230,8 +228,8 @@ public class ImageUtils {
 
 
     //获取图形exif
-    public static Map<String,Object> getExif(InputStream ins){
-        Map<String,Object> map = new HashMap<String,Object>();
+    public static Map<String, Object> getExif(InputStream ins) {
+        Map<String, Object> map = new HashMap<String, Object>();
         try {
             Metadata metadata = ImageMetadataReader.readMetadata(ins);
             map = getExifMap(metadata);
@@ -242,17 +240,18 @@ public class ImageUtils {
         }
         return map;
     }
+
     //获取exif信息，将旋转角度信息拿到
-    private static Map<String,Object> getExifMap(Metadata metadata){
-        Map<String,Object> map = new HashMap<String,Object>();
+    private static Map<String, Object> getExifMap(Metadata metadata) {
+        Map<String, Object> map = new HashMap<String, Object>();
         String tagName = null;
         String desc = null;
-        for(Directory directory : metadata.getDirectories()){
-            for(Tag tag : directory.getTags()){
+        for (Directory directory : metadata.getDirectories()) {
+            for (Tag tag : directory.getTags()) {
                 tagName = tag.getTagName();
                 desc = tag.getDescription();
                 /*  System.out.println(tagName+","+desc);*/
-                if(tagName.equals("Orientation")){
+                if (tagName.equals("Orientation")) {
                     map.put("Orientation", desc);
                     break;
                 }
@@ -262,22 +261,24 @@ public class ImageUtils {
     }
 
     //获取旋转角度
-    public static int getAngle(Map<String,Object> map){
-        if(map==null||map.size()==0){
+    public static int getAngle(Map<String, Object> map) {
+        if (map == null || map.size() == 0) {
             return 0;
         }
         String ori = map.get("Orientation").toString();
         int ro = 0;
-        if(ori.indexOf("90")>=0){
-            ro=1;
-        }else if(ori.indexOf("180")>=0){
-            ro=2;
-        }else if(ori.indexOf("270")>=0){
-            ro=3;
+        if (ori.indexOf("90") >= 0) {
+            ro = 1;
+        } else if (ori.indexOf("180") >= 0) {
+            ro = 2;
+        } else if (ori.indexOf("270") >= 0) {
+            ro = 3;
         }
         return ro;
     }
 
+
+    //复制流到字节数组
     private static ByteArrayOutputStream cloneInputStream(InputStream input) {
         try {
             ByteArrayOutputStream baos = new ByteArrayOutputStream();
@@ -294,13 +295,87 @@ public class ImageUtils {
         }
     }
 
+
+    public static int getRotateAngleForPhoto(InputStream ins) {
+        int angel = 0;
+        try {
+            //核心对象操作对象
+            Metadata metadata = ImageMetadataReader.readMetadata(ins);
+            //获取所有不同类型的Directory，如ExifSubIFDDirectory, ExifInteropDirectory, ExifThumbnailDirectory等，这些类均为ExifDirectoryBase extends Directory子类
+            //分别遍历每一个Directory，根据Directory的Tags就可以读取到相应的信息
+            int orientation = 0;
+            Iterable<Directory> iterable = metadata.getDirectories();
+            for (Iterator<Directory> iter = iterable.iterator(); iter.hasNext(); ) {
+                Directory dr = iter.next();
+                if (dr.getString(ExifIFD0Directory.TAG_ORIENTATION) != null) {
+                    orientation = dr.getInt(ExifIFD0Directory.TAG_ORIENTATION);
+                }
+                /*Collection<Tag> tags = dr.getTags();
+                for (Tag tag : tags) {
+               System.out.println(tag.getTagName() + "： " + tag.getDescription());
+            }*/
+            }
+            if (orientation == 0 || orientation == 1) {
+                angel = 360;
+            } else if (orientation == 3) {
+                angel = 180;
+            } else if (orientation == 6) {
+                angel = 90;
+            } else if (orientation == 8) {
+                angel = 270;
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+        return angel;
+    }
+
+    public static ByteArrayInputStream getBase64FromInputStream(InputStream in) {
+        // 将图片文件转化为字节数组字符串，并对其进行Base64编码处理
+        byte[] data = null;
+        // 读取图片字节数组
+        try {
+            ByteArrayOutputStream swapStream = new ByteArrayOutputStream();
+            byte[] buff = new byte[1024];
+            int rc = 0;
+            while ((rc = in.read(buff, 0, 100)) > 0) {
+                swapStream.write(buff, 0, rc);
+            }
+            data = swapStream.toByteArray();
+        } catch (IOException e) {
+            e.printStackTrace();
+        } finally {
+            if (in != null) {
+                try {
+                    in.close();
+                } catch (IOException e) {
+                    e.printStackTrace();
+                }
+            }
+        }
+        ByteArrayInputStream stream = null;
+        try {
+            BASE64Decoder decoder = new BASE64Decoder();
+            byte[] bytes1 = decoder.decodeBuffer(new String(Base64.encodeBase64(data)));
+            LOGGER.info(new String(Base64.encodeBase64(data)));
+            stream = new ByteArrayInputStream(bytes1);
+        } catch (Exception e) {
+            LOGGER.error(e.getMessage());
+        }
+        return stream;
+    }
+
+
+
+
+
     public static void main(String[] args) throws Exception {
         InputStream in = null;
         //缩放后需要保存的路径
-        File saveFile = new File("d:\\image\\aaa6.jpg");
+        File saveFile = new File("d:\\image\\123-final.jpg");
         try {
             //原图片的路径
-            in = new FileInputStream(new File("d:\\image\\test6.jpg"));
+            in = new FileInputStream(new File("d:\\image\\org-windows.jpg"));
             if (compressAndUpload(in, saveFile, 4)) {
                 System.out.println("图片压缩！");
             }
@@ -309,5 +384,6 @@ public class ImageUtils {
         } finally {
             in.close();
         }
+
     }
 }
